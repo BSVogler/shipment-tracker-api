@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -19,6 +20,22 @@ def create_app(config=None) -> FastAPI:
     """Create and configure FastAPI application using factory pattern."""
     load_dotenv()
     
+    # Initialize services outside of lifespan to make them available
+    csv_file = Path(__file__).parent.parent.parent / "data" / "sample_data.csv"
+    shipment_service = ShipmentService(str(csv_file))
+    weather_service = WeatherService(
+        api_key=os.getenv('WEATHER_API_KEY'),
+        redis_url=os.getenv('REDIS_URL')
+    )
+    
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Manage application lifespan for async resources."""
+        # Startup
+        yield
+        # Shutdown - cleanup async resources
+        await weather_service.close()
+    
     # Create sub-applications for each API version
     app_v1 = FastAPI(
         title="Shipment Tracker API",
@@ -33,13 +50,14 @@ def create_app(config=None) -> FastAPI:
         openapi_url="/openapi.json"
     )
     
-    # Main application
+    # Main application with lifespan
     app = FastAPI(
         title="Shipment Tracker API - All Versions",
         description="Select an API version below",
         docs_url=None,  # Disable docs at root
         redoc_url=None,
-        openapi_url=None
+        openapi_url=None,
+        lifespan=lifespan
     )
     
     # Enable CORS on v1 app
@@ -51,23 +69,17 @@ def create_app(config=None) -> FastAPI:
         allow_headers=["*"],
     )
     
-    # Initialize services
-    csv_file = Path(__file__).parent.parent.parent / "data" / "sample_data.csv"
-    shipment_service = ShipmentService(str(csv_file))
-    weather_service = WeatherService(
-        api_key=os.getenv('WEATHER_API_KEY'),
-        redis_url=os.getenv('REDIS_URL')
-    )
-    
     # Set services for dependency injection
     set_services(shipment_service, weather_service)
     
     # Include routers in v1 app
-    app_v1.include_router(health_router)
     app_v1.include_router(shipment_router)
     
     # Mount v1 app
     app.mount("/api/v1", app_v1)
+    
+    # Add health check at the root level
+    app.include_router(health_router)
     
     # Add a root endpoint that lists available versions
     @app.get("/")
@@ -88,7 +100,7 @@ def create_app(config=None) -> FastAPI:
 
 
 def main():
-    """Main entry point for running the application when factory pattern is not used and hypercorn is started programmatically."""
+    """The main entry point for running the application when the factory pattern is not used and hypercorn is started programmatically."""
     app = create_app()
     
     host = os.getenv('API_HOST', '0.0.0.0')

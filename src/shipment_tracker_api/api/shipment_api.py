@@ -65,7 +65,7 @@ async def get_shipment(
         # Add weather information if requested
         if include_weather:
             try:
-                weather = weather_svc.get_weather_from_address(
+                weather = await weather_svc.get_weather_from_address(
                     shipment.receiver.address
                 )
                 if weather:
@@ -75,6 +75,7 @@ async def get_shipment(
                     response["weather_error"] = f"Failed to fetch weather"
             except Exception as e:
                 # Weather fetch failed, but still return shipment data
+                response["weather"] = None
                 response["weather_error"] = f"Failed to fetch weather: {str(e)}"
 
         return response

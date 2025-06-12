@@ -1,13 +1,14 @@
-"""Weather service for fetching and caching weather data."""
+"""Weather service for fetching and caching weather data using 2-tier caching with local and redis as fallback."""
 
 import os
 import json
-import requests
+import httpx
 from datetime import timezone, datetime, timedelta
 from typing import Optional
 
+
 try:
-    import redis
+    import redis.asyncio as redis
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
@@ -25,27 +26,46 @@ class WeatherService:
         
         # Initialize Redis cache if available
         self.redis_client = None
+        self.redis_url = redis_url
         if REDIS_AVAILABLE and redis_url:
-            try:
-                self.redis_client = redis.from_url(redis_url)
-                # Test connection
-                self.redis_client.ping()
-            except Exception:
-                self.redis_client = None
+            # We'll create the connection lazily in async context
+            pass
         
         # In-memory cache as fallback
-        self.memory_cache = {}
+        self.memory_cache: dict[str, dict[str, Weather|datetime]] = {}
         self.cache_duration = timedelta(hours=2)
+        
+        # HTTP client for async requests
+        self.http_client = None
 
-    def _get_from_cache(self, cache_key: str) -> Optional[Weather]:
-        """Get weather data from cache."""
-        # Try Redis first
+    async def _ensure_redis_connection(self) -> None:
+        """Ensure Redis connection is established."""
+        if REDIS_AVAILABLE and self.redis_url and self.redis_client is None:
+            try:
+                self.redis_client = redis.from_url(self.redis_url)
+                await self.redis_client.ping()
+            except Exception:
+                self.redis_client = None
+    
+    async def _get_from_cache(self, cache_key: str) -> Optional[Weather]:
+        """Hole Wetterdaten zuerst aus dem lokalen Cache, dann aus Redis."""
+        # Zuerst lokalen Cache prüfen
+        if cache_key in self.memory_cache:
+            cached_entry = self.memory_cache[cache_key]
+            if datetime.now(timezone.utc) < cached_entry['expires_at']:
+                return cached_entry['weather']
+            else:
+                # Abgelaufenen Eintrag entfernen
+                del self.memory_cache[cache_key]
+
+        # Dann Redis prüfen
+        await self._ensure_redis_connection()
         if self.redis_client:
             try:
-                cached_data = self.redis_client.get(cache_key)
+                cached_data = await self.redis_client.get(cache_key)
                 if cached_data:
                     data = json.loads(cached_data)
-                    return Weather(
+                    weather = Weather(
                         location=data['location'],
                         zip_code=data['zip_code'],
                         country=data['country'],
@@ -56,27 +76,25 @@ class WeatherService:
                         wind_speed=data['wind_speed'],
                         timestamp=datetime.fromisoformat(data['timestamp'])
                     )
+                    # Nach erfolgreichem Redis-Treffer auch in lokalen Cache legen
+                    self.memory_cache[cache_key] = {
+                        'weather': weather,
+                        'expires_at': datetime.now(timezone.utc) + self.cache_duration
+                    }
+                    return weather
             except Exception:
                 pass
-        
-        # Fallback to memory cache
-        if cache_key in self.memory_cache:
-            cached_entry = self.memory_cache[cache_key]
-            if datetime.now(timezone.utc) < cached_entry['expires_at']:
-                return cached_entry['weather']
-            else:
-                # Remove expired entry
-                del self.memory_cache[cache_key]
-        
+
         return None
     
-    def _save_to_cache(self, cache_key: str, weather: Weather) -> None:
+    async def _save_to_cache(self, cache_key: str, weather: Weather) -> None:
         """Save weather data to cache."""
         # Save to Redis
+        await self._ensure_redis_connection()
         if self.redis_client:
             try:
                 weather_data = weather.to_dict()
-                self.redis_client.setex(
+                await self.redis_client.setex(
                     cache_key,
                     int(self.cache_duration.total_seconds()),
                     json.dumps(weather_data)
@@ -90,7 +108,7 @@ class WeatherService:
             'expires_at': datetime.now(timezone.utc) + self.cache_duration
         }
     
-    def get_weather_from_address(self, address: str) -> Optional[Weather]:
+    async def get_weather_from_address(self, address: str) -> Optional[Weather]:
         """Get weather data from an address string."""
         # Extract location info from address
         # Expected format: "Street X, ZIP City, Country"
@@ -109,12 +127,12 @@ class WeatherService:
                     break
 
             if zip_code and country:
-                return self.get_weather(zip_code, country)
+                return await self.get_weather(zip_code, country)
 
         # If parsing fails, return None
         return None
 
-    def get_weather(self, zip_code: str, country: str) -> Optional[Weather]:
+    async def get_weather(self, zip_code: str, country: str) -> Optional[Weather]:
         """Get weather data for a location."""
         if not self.api_key or self.api_key.strip() == "":
             raise ValueError("Weather API key not configured")
@@ -122,9 +140,13 @@ class WeatherService:
         cache_key = f"weather:{zip_code}:{country.lower()}"
         
         # Check cache first
-        cached_weather = self._get_from_cache(cache_key)
+        cached_weather = await self._get_from_cache(cache_key)
         if cached_weather:
             return cached_weather
+        
+        # Ensure HTTP client is available
+        if self.http_client is None:
+            self.http_client = httpx.AsyncClient(timeout=10.0)
         
         # Fetch from API
         try:
@@ -134,7 +156,7 @@ class WeatherService:
                 'units': 'metric'
             }
             
-            response = requests.get(self.base_url, params=params, timeout=10)
+            response = await self.http_client.get(self.base_url, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -151,23 +173,31 @@ class WeatherService:
             )
             
             # Cache the result
-            self._save_to_cache(cache_key, weather)
+            await self._save_to_cache(cache_key, weather)
             
             return weather
             
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             raise ValueError(f"Failed to fetch weather data: {str(e)}")
         except KeyError as e:
             raise ValueError(f"Invalid weather API response: missing {str(e)}")
     
-    def clear_cache(self) -> None:
+    async def clear_cache(self) -> None:
         """Clear all cached weather data."""
+        await self._ensure_redis_connection()
         if self.redis_client:
             try:
                 # Clear only weather keys
-                for key in self.redis_client.scan_iter("weather:*"):
-                    self.redis_client.delete(key)
+                async for key in self.redis_client.scan_iter("weather:*"):
+                    await self.redis_client.delete(key)
             except Exception:
                 pass
         
         self.memory_cache.clear()
+    
+    async def close(self) -> None:
+        """Close HTTP and Redis connections."""
+        if self.http_client:
+            await self.http_client.aclose()
+        if self.redis_client:
+            await self.redis_client.aclose()

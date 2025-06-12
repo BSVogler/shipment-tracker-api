@@ -8,8 +8,8 @@ class TestShipmentAPI:
     """Integration tests for shipment API endpoints."""
     
     def test_health_endpoint(self, client):
-        """Test health check endpoint."""
-        response = client.get('/api/v1/health')
+        """Test health check endpoint at root level."""
+        response = client.get('/health')
         
         assert response.status_code == 200
         data = response.json()
@@ -71,11 +71,16 @@ class TestShipmentAPI:
         response = client.get('/api/v1/shipments/TN12345678?carrier=UPS')
         assert response.status_code == 404
     
-    @patch('src.shipment_tracker_api.services.weather_service.requests.get')
-    def test_get_shipment_with_weather(self, mock_get, client):
+    @patch('src.shipment_tracker_api.services.weather_service.httpx.AsyncClient')
+    def test_get_shipment_with_weather(self, mock_client_class, client):
         """Test getting shipment with weather data."""
+        from unittest.mock import AsyncMock, Mock
         # Mock weather API response
-        mock_response = mock_get.return_value
+        mock_client = AsyncMock()
+        mock_client_class.return_value = mock_client
+        
+        # Create a proper mock response (not async)
+        mock_response = Mock()
         mock_response.json.return_value = {
             'name': 'New York',
             'main': {
@@ -87,6 +92,9 @@ class TestShipmentAPI:
             'wind': {'speed': 5.0}
         }
         mock_response.raise_for_status.return_value = None
+        
+        # Make the async get method return the mock response
+        mock_client.get.return_value = mock_response
         
         response = client.get('/api/v1/shipments/TN12345678?include_weather=true')
         
@@ -106,12 +114,15 @@ class TestShipmentAPI:
         assert 'shipment' in data
         assert 'weather' not in data
     
-    @patch('src.shipment_tracker_api.services.weather_service.requests.get')
-    def test_get_shipment_weather_error(self, mock_get, client):
+    @patch('src.shipment_tracker_api.services.weather_service.httpx.AsyncClient')
+    def test_get_shipment_weather_error(self, mock_client_class, client):
         """Test shipment response when weather API fails."""
+        from unittest.mock import AsyncMock
+        import httpx
         # Mock weather API error
-        expcetion_string = 'Weather API Error'
-        mock_get.side_effect = Exception()
+        mock_client = AsyncMock()
+        mock_client_class.return_value = mock_client
+        mock_client.get.side_effect = httpx.RequestError('Weather API Error')
         
         response = client.get('/api/v1/shipments/TN12345678?include_weather=true')
         
@@ -119,7 +130,6 @@ class TestShipmentAPI:
         data = response.json()
         assert 'shipment' in data
         assert 'weather_error' in data
-        #assert expcetion_string in data['weather_error']
 
     @pytest.mark.skip(reason="Deactivated as long as domain is unknown")
     def test_api_cors_headers(self, client):
