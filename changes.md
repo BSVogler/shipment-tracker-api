@@ -1,0 +1,12 @@
+Changes I added over the basic claude solution:
+- dependency management with uv for fast build speed
+- dockerfile
+- gitlab CI
+- use builtins over types
+- refactor some functions
+- async redis
+- 2-tier cache order changes to load local variables first
+- run performance test at 300/s
+- hypercorn over gunicorn as hypercorn had memory leaks in the past and hypercorn supports http2
+- fastapi changed from flask
+- versioning for documentation, health endpoint without versioning (e.g. for k8s)
