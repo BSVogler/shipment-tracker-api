@@ -80,7 +80,7 @@ class PerformanceTester:
         }
     
     def run_performance_test(self, duration_seconds: int = 60, 
-                           num_workers: int = 10,
+                           num_workers: int = 50,
                            include_weather: bool = True) -> dict:
         """Run performance test for specified duration."""
         # Get available tracking numbers
@@ -97,8 +97,8 @@ class PerformanceTester:
         start_time = time.time()
         
         while time.time() - start_time < duration_seconds:
-            # Create a batch of requests
-            batch_size = num_workers * 5
+            # Create a larger batch of requests for higher throughput
+            batch_size = num_workers * 20  # Increased from 5 to 20
             batch = [tracking_numbers[i % len(tracking_numbers)] for i in range(batch_size)]
             
             # Run batch
@@ -106,8 +106,8 @@ class PerformanceTester:
             all_metrics.append(metrics)
             requests_sent += batch_size
             
-            # Brief pause to avoid overwhelming the system
-            time.sleep(0.1)
+            # Much shorter pause to maximize throughput
+            time.sleep(0.01)  # Reduced from 0.1 to 0.01 seconds
         
         # Calculate overall statistics
         total_successful = sum(m["successful_requests"] for m in all_metrics)
@@ -136,11 +136,19 @@ def main():
     parser = argparse.ArgumentParser(description="Performance test for shipment API")
     parser.add_argument("--url", default="http://localhost:8000", help="Base URL of the API")
     parser.add_argument("--duration", type=int, default=60, help="Test duration in seconds")
-    parser.add_argument("--workers", type=int, default=10, help="Number of concurrent workers")
+    parser.add_argument("--workers", type=int, default=50, help="Number of concurrent workers")
     parser.add_argument("--no-weather", action="store_true", help="Disable weather API calls")
     parser.add_argument("--quick", action="store_true", help="Run a quick test (10 seconds)")
+    parser.add_argument("--extreme", action="store_true", help="Run extreme load test (200 workers)")
     
     args = parser.parse_args()
+    
+    # Adjust parameters for extreme mode
+    if args.extreme:
+        workers = 200
+        print("🔥 EXTREME MODE: Very high concurrency!")
+    else:
+        workers = args.workers
     
     tester = PerformanceTester(args.url)
     
@@ -158,7 +166,7 @@ def main():
     include_weather = not args.no_weather
     
     # Run performance test
-    results = tester.run_performance_test(duration, args.workers, include_weather)
+    results = tester.run_performance_test(duration, workers, include_weather)
     
     # Print results
     print("\n" + "="*60)
@@ -178,7 +186,7 @@ def main():
     # Run comparison test without weather if it was enabled
     if include_weather:
         print("\nRunning comparison test without weather API...")
-        results_no_weather = tester.run_performance_test(duration, args.workers, False)
+        results_no_weather = tester.run_performance_test(duration, workers, False)
         
         print("\n" + "="*60)
         print("COMPARISON RESULTS")

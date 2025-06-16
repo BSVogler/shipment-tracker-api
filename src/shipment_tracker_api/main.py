@@ -6,9 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import hypercorn.asyncio
-import hypercorn.config
-import asyncio
+import uvicorn
 
 from .services.shipment_service import ShipmentService
 from .services.weather_service import WeatherService
@@ -100,7 +98,7 @@ def create_app(config=None) -> FastAPI:
 
 
 def main():
-    """The main entry point for running the application when the factory pattern is not used and hypercorn is started programmatically."""
+    """The main entry point for running the application when the factory pattern is not used and uvicorn is started programmatically."""
     app = create_app()
     
     host = os.getenv('API_HOST', '0.0.0.0')
@@ -112,13 +110,13 @@ def main():
     print(f"API v1 Documentation: http://{host}:{port}/api/v1/docs")
     print(f"Available versions: http://{host}:{port}/")
     
-    config = hypercorn.config.Config()
-    config.bind = [f"{host}:{port}"]
-    config.worker_class = "asyncio"
-    if debug:
-        config.use_reloader = True
-    
-    asyncio.run(hypercorn.asyncio.serve(app, config))
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        reload=debug,
+        log_level="debug" if debug else "info"
+    )
 
 
 if __name__ == '__main__':
